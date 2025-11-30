@@ -1,140 +1,44 @@
-import os
 import gradio as gr
-from transformers import pipeline
-import torch
-from dotenv import load_dotenv
-from PIL import Image
+from utils import load_model, extract_handwriting, analyze_artwork
 
-# Load environment variables
-load_dotenv()
-hf_token = os.getenv("HF_TOKEN")
-
-print("Loading model... This may take a minute...")
-pipe = pipeline(
-    "image-text-to-text",
-    model="Salesforce/blip2-opt-2.7b",  # Good for both OCR and visual tasks
-    token=hf_token,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-)
-print("Model loaded successfully!")
-
-def extract_handwriting(image):
-    """
-    Extract handwritten text from the image
-    """
-    if image is None:
-        return "No image provided"
-    
-    prompt = """You are an expert OCR system specializing in handwritten text recognition.
-
-Task: Extract ALL handwritten text from this image.
-
-Instructions:
-- Transcribe exactly what is written, word for word
-- Preserve line breaks and paragraph structure
-- Include any crossed-out text in [strikethrough: text] format
-- If text is unclear, use [unclear: best_guess] format
-- Ignore any printed text, focus only on handwriting
-- If no handwriting exists, respond with: "No handwritten text detected"
-
-Output the transcribed text directly without explanations."""
-    
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt}
-            ]
-        }
-    ]
-    
-    try:
-        output = pipe(messages, max_new_tokens=500)
-        extracted_text = output[0]["generated_text"][-1]["content"]
-        if not extracted_text or extracted_text.strip() == "":
-            return "No text could be extracted. Try a clearer image."
-        
-        return extracted_text.strip()
-
-    except Exception as e:
-        return f"Error extracting text: {str(e)}"
-
-def analyze_artwork(image):
-    """
-    Analyze the artistic elements in the image
-    """
-    if image is None:
-        return "No image provided"
-    
-    prompt = """You are an expert art historian and critic. Analyze any artwork, painting, sketch, or drawing in this image.
-
-Provide a detailed analysis in the following structure:
-
-**Art Style & Movement:**
-Identify the artistic style (e.g., Renaissance, Impressionism, Cubism, Abstract, Contemporary, etc.)
-
-**Medium & Technique:**
-Describe the medium used (oil, watercolor, pencil, charcoal, digital, etc.) and technical approach
-
-**Subject & Composition:**
-What is depicted? How is the composition arranged?
-
-**Visual Elements:**
-- Color palette and use of color
-- Light and shadow
-- Perspective and depth
-- Texture and brushwork (if visible)
-
-**Historical & Cultural Context:**
-Time period, art movement, or cultural significance (if identifiable)
-
-**Notable Characteristics:**
-Unique features, symbolism, or artistic choices
-
-If no artwork is visible, respond with: "No artwork detected in this image"
-
-Provide your analysis in clear paragraphs."""
-    
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt}
-            ]
-        }
-    ]
-    
-    try:
-        output = pipe(messages, max_new_tokens=500)
-        analysis = output[0]["generated_text"][-1]["content"]
-        if not analysis or analysis.strip() == "":
-            return "Could not analyze artwork. Try a different image."
-        
-        return analysis.strip()
-    except Exception as e:
-        return f" Error analyzing artwork: {str(e)}"
+print("Initializing application...")
+model_pipeline = load_model(model_name="Salesforce/blip2-opt-2.7b")
 
 def process_image(image):
     """
-    Main function that combines both OCR and art analysis
+    Main processing function that coordinates OCR and art analysis
+    
+    Args:
+        image: PIL Image object from Gradio
+        
+    Returns:
+        tuple: (status_message, ocr_result, art_analysis_result)
     """
     if image is None:
-        return " Please upload an image", "", ""
+        return "Please upload an image", "", ""
     
-    # Run both analyses
-    status = "Processing complete!"
-    handwriting_result = extract_handwriting(image)
-    art_result = analyze_artwork(image)
+    status = " Processing... Extracting handwriting..."
+    
+    handwriting_result = extract_handwriting(image, model_pipeline)
+    status = " Processing... Analyzing artwork..."
+    art_result = analyze_artwork(image, model_pipeline)
+    status = " Analysis complete!"
     
     return status, handwriting_result, art_result
 
-# Create Gradio Interface
+def clear_interface():
+    """
+    Reset the interface to initial state
+    
+    Returns:
+        tuple: Empty values for all outputs
+    """
+    return None, "### Status: Waiting for image...", "", ""
+
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    # Header
     gr.Markdown("""
-    # 🎨✍️ Handwritten Art Notes Analyzer
+    # Handwritten Art Notes Analyzer
     
     Upload an image containing handwritten notes and/or artwork. 
     This tool will:
@@ -142,8 +46,10 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     - **Analyze** any artwork for style, technique, and historical context
     """)
     
-    gr.Markdown("### 📸 Upload Your Image")
+    gr.Markdown("---")
+    gr.Markdown("###  Upload Your Image")
     
+    # Main layout
     with gr.Row():
         with gr.Column(scale=1):
             image_input = gr.Image(
@@ -151,29 +57,43 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 label="Upload Image with Handwriting or Artwork",
                 height=400
             )
-            analyze_btn = gr.Button("🔍 Analyze", variant="primary", size="lg")
-            clear_btn = gr.Button("🗑️ Clear", size="lg")
-    
+            
+            with gr.Row():
+                analyze_btn = gr.Button(
+                    " Analyze", 
+                    variant="primary", 
+                    size="lg",
+                    scale=2
+                )
+                clear_btn = gr.Button(
+                    " Clear", 
+                    size="lg",
+                    scale=1
+                )
+
     status_output = gr.Markdown("### Status: Waiting for image...")
     
+    gr.Markdown("---")
+
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 📝 Extracted Handwriting")
+            gr.Markdown("### Extracted Handwriting")
             text_output = gr.Textbox(
                 label="Digital Text",
-                lines=10,
-                placeholder="Handwritten text will appear here..."
+                lines=12,
+                placeholder="Handwritten text will appear here...",
+                show_copy_button=True
             )
         
         with gr.Column(scale=1):
-            gr.Markdown("### 🎨 Artwork Analysis")
+            gr.Markdown("### Artwork Analysis")
             art_output = gr.Textbox(
                 label="Art Analysis",
-                lines=10,
-                placeholder="Artwork analysis will appear here..."
+                lines=12,
+                placeholder="Artwork analysis will appear here...",
+                show_copy_button=True
             )
     
-    # Button actions
     analyze_btn.click(
         fn=process_image,
         inputs=[image_input],
@@ -181,11 +101,11 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     )
     
     clear_btn.click(
-        fn=lambda: (None, "### Status: Waiting for image...", "", ""),
+        fn=clear_interface,
         inputs=[],
         outputs=[image_input, status_output, text_output, art_output]
     )
-    
+
     gr.Markdown("""
     ---
     ### 💡 Tips for Best Results:
@@ -194,9 +114,17 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     - Higher resolution images work better
     - Try different angles if results aren't satisfactory
     
-    ### 🚀 Version 1.0 (Without RAG)
-    Future updates will include RAG for deeper art history knowledge!
+    ### 📊 Current Version: 1.0
+    -  Handwriting extraction (OCR)
+    -  Art style & technique analysis
+    -  Historical context identification
+    -  RAG integration (coming in v2.0)
+    
+    ### 🛠️ Tech Stack:
+    - Model: Salesforce BLIP-2
+    - Framework: Gradio + Transformers
+    - Deployment: Hugging Face Spaces
     """)
 
 if __name__ == "__main__":
-    demo.launch(pwa=True,share=True)
+    demo.launch(pwa=True, share=True)
